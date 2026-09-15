@@ -14,7 +14,7 @@ import json
 
 from openapi import base_url, build_url
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 # Fallback if the model omits the codes a secure API should answer a probe with.

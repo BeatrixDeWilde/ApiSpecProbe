@@ -1,2 +1,2 @@
 APP_SECRET="local-demo-value-replace-me"
-GEMINI_API_KEY="your-gemini-api-key"
+GEMINI_API_KEY=""

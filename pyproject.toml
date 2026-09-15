@@ -5,4 +5,4 @@ requires-python = ">=3.13"
 dependencies = ["fastapi"]
 
 [dependency-groups]
-dev = ["workers-py", "workers-runtime-sdk", "pytest", "httpx"]
+dev = ["workers-py", "workers-runtime-sdk", "pytest", "httpx", "uvicorn", "python-dotenv"]
