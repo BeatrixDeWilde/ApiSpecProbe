@@ -158,8 +158,9 @@ function ProbePanel({ specLoaded, result, status, error, onGenerate, selectedId,
           {status === 'loading' ? 'Generating…' : 'Generate malicious requests'}
         </button>
         <p className="hint">
-          Each probe injects an attack payload (SQLi, XSS, traversal, malformed / oversized bodies,
-          auth abuse) into a real endpoint. Click one to send it and inspect the response.
+          Gemini reads the spec and proposes probes that inject attack payloads (SQLi, XSS,
+          traversal, malformed / oversized bodies, auth abuse) into real endpoints. Generation
+          can take a few seconds. Click a probe to send it and inspect the response.
         </p>
 
         {error && <p className="alert" role="alert">{error}</p>}

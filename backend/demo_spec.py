@@ -1,25 +1,24 @@
-"""A bundled copy of the Swagger Petstore (v2) OpenAPI/Swagger 2.0 spec.
+"""The demo OpenAPI spec that the app loads by default.
 
-The live spec is fetched by the browser from https://petstore.swagger.io/v2/swagger.json.
-This bundled copy is a faithful subset used as a resilience fallback so that request
-generation always works even when the browser cannot reach the live service. It is
-intentionally trimmed to the operations and parameters the generator needs; response
-schemas and model definitions are omitted because the generator crafts its own payloads.
+This is the *only* API-specific data in the backend: it is simply the spec that
+gets loaded for the demo. Everything else (route handling and request generation)
+is generic and works for any uploaded OpenAPI/Swagger document.
+
+The live spec is fetched by the browser from the demo spec URL; this bundled copy
+is a faithful Swagger 2.0 subset used as a resilience fallback so the tool still
+works when the browser cannot reach the live service.
 """
 
-# The demo is deliberately locked to this host. The backend refuses to generate
-# probe requests for any other target.
-PETSTORE_HOST = "petstore.swagger.io"
-PETSTORE_SPEC_URL = "https://petstore.swagger.io/v2/swagger.json"
+DEMO_SPEC_URL = "https://petstore.swagger.io/v2/swagger.json"
 
-PETSTORE_SPEC = {
+DEMO_SPEC = {
     "swagger": "2.0",
     "info": {
         "title": "Swagger Petstore",
         "version": "1.0.7",
         "description": "This is a sample server Petstore server, used as a locked demo target.",
     },
-    "host": PETSTORE_HOST,
+    "host": "petstore.swagger.io",
     "basePath": "/v2",
     "schemes": ["https"],
     "securityDefinitions": {
