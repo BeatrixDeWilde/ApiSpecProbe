@@ -270,3 +270,68 @@ def test_generate_route_returns_probes(monkeypatch):
     resp = client_with_env(GEMINI_API_KEY="k").post("/api/generate", json={"spec": DEMO_SPEC})
     assert resp.status_code == 200
     assert resp.json()["count"] == 2
+
+
+@pytest.mark.parametrize('url', [
+    'http://petstore.swagger.io/v2/pet/1',
+    'https://example.com/', 'https://127.0.0.1/',
+    'https://petstore.swagger.io.evil.example/',
+    'https://petstore.swagger.io@evil.example/',
+    'https://user@petstore.swagger.io/',
+    'https://petstore.swagger.io:8443/',
+    'https://petstore.swagger.io\\@evil.example/',
+    'https://petstore.swagger.io\n.evil.example/',
+    'https://petstore.swagger.io/#fragment',
+])
+def test_execute_blocks_destinations_before_network(monkeypatch, url):
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Disallowed destination reached transport')
+    monkeypatch.setattr(http_client, 'fetch_text', forbidden)
+    assert client.post('/api/execute', json={'url': url}).status_code == 400
+
+
+@pytest.mark.parametrize('headers', [
+    {'Host': 'evil.example'}, {'Connection': 'keep-alive'},
+    {'Content-Length': '100'}, {'X-Test': 'value\r\nHost: evil.example'},
+])
+def test_execute_blocks_routing_header_overrides(headers):
+    assert client.post('/api/execute', json={
+        'url': 'https://petstore.swagger.io/v2/pet/1', 'headers': headers,
+    }).status_code == 400
+
+
+def test_local_transport_does_not_follow_redirect(monkeypatch):
+    import httpx
+    real_client = httpx.AsyncClient
+    visited = []
+    def respond(request):
+        visited.append(str(request.url))
+        return httpx.Response(302, headers={'Location': 'https://example.com/private'})
+    def mock_client(**kwargs):
+        return real_client(transport=httpx.MockTransport(respond), **kwargs)
+    monkeypatch.setattr(http_client, '_IN_WORKERS', False)
+    monkeypatch.setattr(httpx, 'AsyncClient', mock_client)
+    result = asyncio.run(http_client.fetch_text('GET', 'https://petstore.swagger.io/v2/pet/1'))
+    assert result[0] == 302
+    assert len(visited) == 1
+
+
+def test_workers_transport_uses_manual_redirects(monkeypatch):
+    import sys
+    seen = {}
+    class Response:
+        status = 302
+        statusText = 'Found'
+        async def text(self):
+            return ''
+    async def fetch(url, options):
+        seen.update(options)
+        return Response()
+    monkeypatch.setitem(sys.modules, 'js', SimpleNamespace(
+        fetch=fetch, Object=SimpleNamespace(fromEntries=lambda x: x)))
+    monkeypatch.setitem(sys.modules, 'pyodide.ffi', SimpleNamespace(
+        to_js=lambda value, **kwargs: value))
+    monkeypatch.setattr(http_client, '_IN_WORKERS', True)
+    result = asyncio.run(http_client.fetch_text('GET', 'https://petstore.swagger.io/v2/pet/1'))
+    assert seen['redirect'] == 'manual'
+    assert result[0] == 302

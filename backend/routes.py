@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 import time
+from urllib.parse import urlsplit
 
 import gemini
 import http_client
@@ -78,12 +79,28 @@ async def execute(payload: ExecutePayload):
     """Send a generated probe request server-side and return the response.
 
     Executing from the backend (rather than the browser) avoids CORS limits and
-    keeps the client from making cross-origin calls itself. Only http(s) URLs are
-    allowed.
+    keeps the client from making cross-origin calls itself. Only HTTPS Petstore
+    URLs are allowed; the transport never follows redirects.
     """
-    if not payload.url.lower().startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="Only http(s) URLs can be executed.")
+    # Validate the authority exactly; reject parser ambiguities before networking.
+    try:
+        url = urlsplit(payload.url)
+        allowed = (
+            url.scheme == "https"
+            and url.netloc.lower() in {"petstore.swagger.io", "petstore.swagger.io:443"}
+            and not any(ord(c) <= 32 or ord(c) == 127 for c in payload.url)
+            and "\\" not in payload.url
+            and not url.fragment
+        )
+    except ValueError:
+        allowed = False
+    if not allowed:
+        raise HTTPException(status_code=400, detail="Only https://petstore.swagger.io URLs can be executed.")
     headers = {str(k): str(v) for k, v in (payload.headers or {}).items()}
+    if any(k.lower() in {"host", ":authority", "connection", "transfer-encoding", "content-length"}
+           or k != k.strip() or any(ord(c) < 32 or ord(c) == 127 for c in k + v)
+           for k, v in headers.items()):
+        raise HTTPException(status_code=400, detail="Routing headers and control characters are not allowed.")
     started = time.monotonic()
     try:
         status, status_text, text = await http_client.fetch_text(

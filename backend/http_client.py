@@ -40,7 +40,7 @@ async def fetch_text(method, url, headers=None, body=None, timeout=45):
         from js import Object
         from pyodide.ffi import to_js
 
-        opts = {"method": method, "headers": headers}
+        opts = {"method": method, "headers": headers, "redirect": "manual"}
         if body is not None:
             opts["body"] = body
         options = to_js(opts, dict_converter=Object.fromEntries)
@@ -54,7 +54,7 @@ async def fetch_text(method, url, headers=None, body=None, timeout=45):
     import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.request(method, url, headers=headers, content=body)
         return response.status_code, response.reason_phrase, response.text
     except httpx.RequestError as exc:
