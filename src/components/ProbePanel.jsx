@@ -38,11 +38,30 @@ export default function ProbePanel({
 
         {error && <p className="alert" role="alert">{error}</p>}
 
-        {!result && !error && <p className="empty">{specLoaded ? 'Ready to generate.' : 'Load a spec first.'}</p>}
+        {status !== 'idle' && (
+          <div className="loading" role="status" aria-live="polite">
+            <div className="spinner" aria-hidden="true" />
+            <p className="loading-text">
+              {status === 'generating' ? 'Generating probes' : 'Loading cached probes'}
+              <span className="dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+            </p>
+            {status === 'generating' && (
+              <p className="hint" style={{ margin: 0 }}>Analysing the spec and crafting malicious requests…</p>
+            )}
+            <div className="skeleton-list" aria-hidden="true">
+              <div className="skeleton" />
+              <div className="skeleton" />
+              <div className="skeleton" />
+              <div className="skeleton" />
+            </div>
+          </div>
+        )}
 
-        {result?.cached && <p className="hint hint-warn">Showing cached probes (not generated live).</p>}
+        {status === 'idle' && !result && !error && <p className="empty">{specLoaded ? 'Ready to generate.' : 'Load a spec first.'}</p>}
 
-        {grouped.map(([opId, group]) => (
+        {status === 'idle' && result?.cached && <p className="hint hint-warn">Showing cached probes (not generated live).</p>}
+
+        {status === 'idle' && grouped.map(([opId, group]) => (
           <div className="op-group" key={opId}>
             <div className="op-head">
               <span className={`method method-${group.method.toLowerCase()}`}>{group.method}</span>
