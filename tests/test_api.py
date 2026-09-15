@@ -142,7 +142,56 @@ def test_generate_requests_raises_on_bad_gemini_output():
         return {"promptFeedback": {"blockReason": "SAFETY"}}
 
     with pytest.raises(gemini.GeminiError):
-        asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=fake_post))
+        asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=fake_post, backoff=0))
+
+
+def test_generate_retries_transient_error_then_succeeds():
+    calls = {"n": 0}
+
+    async def flaky_post(url, headers, payload):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise gemini.GeminiError("Gemini API error 500: Internal Server Error", retryable=True)
+        return _gemini_response(SAMPLE_ITEMS)
+
+    result = asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=flaky_post, backoff=0))
+    assert calls["n"] == 2
+    assert result["count"] == 2
+
+
+def test_generate_gives_up_after_retries():
+    calls = {"n": 0}
+
+    async def always_500(url, headers, payload):
+        calls["n"] += 1
+        raise gemini.GeminiError("Gemini API error 500: Internal Server Error", retryable=True)
+
+    with pytest.raises(gemini.GeminiError):
+        asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=always_500, retries=1, backoff=0))
+    assert calls["n"] == 2  # original attempt + one retry
+
+
+def test_generate_does_not_retry_non_retryable_error():
+    calls = {"n": 0}
+
+    async def not_found(url, headers, payload):
+        calls["n"] += 1
+        raise gemini.GeminiError("Gemini API error 404: model gone", retryable=False)
+
+    with pytest.raises(gemini.GeminiError):
+        asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=not_found, retries=1, backoff=0))
+    assert calls["n"] == 1  # not retried
+
+
+def test_generate_route_returns_json_on_unexpected_error(monkeypatch):
+    async def boom(url, headers, payload):
+        raise RuntimeError("kaboom")  # unexpected, non-GeminiError
+
+    monkeypatch.setattr(gemini, "_default_post", boom)
+    resp = client_with_env(GEMINI_API_KEY="k").post("/api/generate", json={"spec": DEMO_SPEC})
+    assert resp.status_code == 502
+    # Body must be valid JSON with a detail, never a raw "Internal Server Error".
+    assert "kaboom" in resp.json()["detail"]
 
 
 def test_generate_is_not_locked_to_any_host(monkeypatch):
