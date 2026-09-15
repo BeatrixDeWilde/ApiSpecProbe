@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 import gemini
+from cached import CACHED_RESULT
 from demo_spec import DEMO_SPEC, DEMO_SPEC_URL
 from openapi import base_url
 
@@ -34,6 +35,12 @@ async def target():
 async def spec():
     """Bundled demo spec, used as a fallback when the live fetch fails."""
     return DEMO_SPEC
+
+
+@router.get("/api/cached")
+async def cached():
+    """Cached probe requests (with sample responses) for the demo fallback."""
+    return CACHED_RESULT
 
 
 @router.post("/api/generate")
