@@ -7,7 +7,10 @@ Route handlers only: spec/request-generation logic lives in ``gemini.py`` and
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
+import time
+
 import gemini
+import http_client
 from cached import CACHED_RESULT
 from demo_spec import DEMO_SPEC, DEMO_SPEC_URL
 from openapi import base_url
@@ -17,6 +20,13 @@ router = APIRouter()
 
 class SpecPayload(BaseModel):
     spec: dict
+
+
+class ExecutePayload(BaseModel):
+    method: str = "GET"
+    url: str
+    headers: dict = {}
+    body: str | None = None
 
 
 def _secret(request: Request, name: str):
@@ -61,3 +71,46 @@ async def generate(payload: SpecPayload, request: Request):
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:  # never leak a raw non-JSON 500 to the client
         raise HTTPException(status_code=502, detail=f"Request generation failed: {exc}")
+
+
+@router.post("/api/execute")
+async def execute(payload: ExecutePayload):
+    """Send a generated probe request server-side and return the response.
+
+    Executing from the backend (rather than the browser) avoids CORS limits and
+    keeps the client from making cross-origin calls itself. Only http(s) URLs are
+    allowed.
+    """
+    if not payload.url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Only http(s) URLs can be executed.")
+    headers = {str(k): str(v) for k, v in (payload.headers or {}).items()}
+    started = time.monotonic()
+    try:
+        status, status_text, text = await http_client.fetch_text(
+            payload.method, payload.url, headers, payload.body
+        )
+    except http_client.HttpError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not send request: {exc}")
+    return {
+        "status": status,
+        "statusText": status_text,
+        "body": text,
+        "elapsedMs": int((time.monotonic() - started) * 1000),
+    }
+
+
+@router.get("/api/message")
+async def message(request: Request, response: Response):
+    # Cloudflare supplies this binding on the server; never send its value to React.
+    secret = _secret(request, "APP_SECRET")
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="APP_SECRET is not configured on the backend.",
+            headers={"Cache-Control": "no-store"},
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "message": "Hello from FastAPI! The secret was read successfully.",
+        "secret_loaded": True,
+    }

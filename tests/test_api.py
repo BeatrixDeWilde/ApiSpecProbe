@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import gemini
+import http_client
 from app import app
 from demo_spec import DEMO_SPEC, DEMO_SPEC_URL
 from openapi import base_url, build_url
@@ -191,6 +192,43 @@ def test_generate_does_not_retry_non_retryable_error():
     with pytest.raises(gemini.GeminiError):
         asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=not_found, retries=1, backoff=0))
     assert calls["n"] == 1  # not retried
+
+
+def test_execute_sends_request_from_backend(monkeypatch):
+    seen = {}
+
+    async def fake_fetch(method, url, headers=None, body=None, timeout=45):
+        seen.update(method=method, url=url, headers=headers, body=body)
+        return 404, "Not Found", '{"message":"Pet not found"}'
+
+    monkeypatch.setattr(http_client, "fetch_text", fake_fetch)
+    resp = client.post("/api/execute", json={
+        "method": "GET", "url": "https://petstore.swagger.io/v2/pet/1%20OR%201%3D1",
+        "headers": {"api_key": "x"}, "body": None,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == 404
+    assert data["statusText"] == "Not Found"
+    assert "Pet not found" in data["body"]
+    assert isinstance(data["elapsedMs"], int)
+    assert seen["method"] == "GET" and seen["headers"] == {"api_key": "x"}
+
+
+def test_execute_rejects_non_http_url():
+    resp = client.post("/api/execute", json={"method": "GET", "url": "file:///etc/passwd"})
+    assert resp.status_code == 400
+    assert "http" in resp.json()["detail"].lower()
+
+
+def test_execute_returns_502_when_send_fails(monkeypatch):
+    async def boom(method, url, headers=None, body=None, timeout=45):
+        raise http_client.HttpError("connection refused", retryable=True)
+
+    monkeypatch.setattr(http_client, "fetch_text", boom)
+    resp = client.post("/api/execute", json={"method": "GET", "url": "https://petstore.swagger.io/v2/pet/1"})
+    assert resp.status_code == 502
+    assert "could not send" in resp.json()["detail"].lower()
 
 
 def test_generate_route_returns_json_on_unexpected_error(monkeypatch):

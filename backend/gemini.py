@@ -13,6 +13,7 @@ is given.
 import asyncio
 import json
 
+import http_client
 from openapi import base_url, build_url
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
@@ -105,63 +106,16 @@ def build_prompt(spec):
 
 # --- transport -------------------------------------------------------------
 
-try:  # Present only in the Cloudflare Python Workers runtime.
-    import js  # noqa: F401
-    from pyodide.ffi import to_js  # noqa: F401
-
-    _IN_WORKERS = True
-except Exception:  # pragma: no cover - depends on runtime
-    _IN_WORKERS = False
-
-
-def _decode(text):
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        raise GeminiError(
-            f"Gemini returned a non-JSON response: {text[:300]}", retryable=True
-        )
-
-
 async def _default_post(url, headers, payload):
-    """POST JSON and return the parsed JSON response.
+    """POST JSON to Gemini and return the parsed response.
 
-    HTTP 5xx and transport/parse failures are raised as retryable errors.
+    Transport failures, HTTP 5xx and unparseable output are surfaced as
+    retryable ``GeminiError``s.
     """
-    if _IN_WORKERS:  # pragma: no cover - runs only on Cloudflare
-        import js
-        from js import Object
-        from pyodide.ffi import to_js
-
-        options = to_js(
-            {"method": "POST", "headers": headers, "body": json.dumps(payload)},
-            dict_converter=Object.fromEntries,
-        )
-        try:
-            response = await js.fetch(url, options)
-            text = await response.text()
-            status = response.status
-        except Exception as exc:  # network / runtime failure
-            raise GeminiError(f"Could not reach Gemini: {exc}", retryable=True)
-        if status >= 400:
-            raise GeminiError(
-                f"Gemini API error {status}: {text[:300]}", retryable=status >= 500
-            )
-        return _decode(text)
-
-    import httpx
-
     try:
-        async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(url, headers=headers, json=payload)
-    except httpx.RequestError as exc:
-        raise GeminiError(f"Could not reach Gemini: {exc}", retryable=True)
-    if response.status_code >= 400:
-        raise GeminiError(
-            f"Gemini API error {response.status_code}: {response.text[:300]}",
-            retryable=response.status_code >= 500,
-        )
-    return _decode(response.text)
+        return await http_client.post_json(url, headers, payload)
+    except http_client.HttpError as exc:
+        raise GeminiError(f"Gemini request failed: {exc}", retryable=exc.retryable)
 
 
 # --- parsing + normalisation ----------------------------------------------
