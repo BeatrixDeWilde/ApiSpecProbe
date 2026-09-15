@@ -23,7 +23,7 @@ export default function ProbePanel({
       <div className="panel-body">
         <div className="btn-row">
           <button className="btn btn-primary" onClick={onGenerate} disabled={!specLoaded || status !== 'idle'}>
-            {status === 'generating' ? 'Generating…' : 'Generate malicious requests'}
+            {status === 'generating' ? 'Generating…' : 'Generate requests'}
           </button>
           <button className="btn btn-ghost btn-block" onClick={onLoadCached} disabled={status !== 'idle'}
                   title="Use pre-generated probes if live generation fails">
@@ -32,8 +32,7 @@ export default function ProbePanel({
         </div>
         <p className="hint">
           Proposed probes generated from the API spec that inject attack payloads (SQLi, XSS,
-          traversal, malformed / oversized bodies, auth abuse) into real endpoints. Generation
-          can take a few seconds — or load a cached set. Click a probe to inspect it, then send it
+          traversal, malformed / oversized bodies, auth abuse) into real endpoints. If there is an issue with the API then you can load cached responses. Click a probe to inspect it, then send it
           from the response panel.
         </p>
 
