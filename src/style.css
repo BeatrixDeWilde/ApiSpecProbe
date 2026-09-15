@@ -1,0 +1,9 @@
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #18243e; background: #f7f8fa; }
+main { max-width: 640px; margin: 64px auto; padding: 0 24px; }
+h1 { font-size: 2rem; margin-bottom: 8px; }
+p { color: #526078; }
+button { padding: 10px 18px; font: inherit; color: white; background: #2850cc; border: 0; border-radius: 6px; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+button:focus-visible { outline: 3px solid #8ca7ff; outline-offset: 3px; }
+pre { padding: 16px; background: white; border: 1px solid #ddd; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+[role="alert"] { color: #b02020; }

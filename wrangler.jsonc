@@ -1,0 +1,11 @@
+{
+  "name": "apispecprobe",
+  "main": "backend/entry.py",
+  "compatibility_date": "2026-09-12",
+  "compatibility_flags": ["python_workers"],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  }
+}
