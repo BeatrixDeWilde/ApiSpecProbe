@@ -282,7 +282,7 @@ function PerformanceSummary({ summary }) {
   );
 }
 
-function ResponsePanel({ probe, entry, summary, onRun, onLoadCached }) {
+function ResponsePanel({ probe, entry, summary, hasProbes, bulk, onRun, onLoadCached, onSendAll, onLoadAllCached }) {
   const running = entry?.state === 'running';
   return (
     <section className="panel" aria-labelledby="resp-heading">
@@ -293,6 +293,16 @@ function ResponsePanel({ probe, entry, summary, onRun, onLoadCached }) {
         )}
       </div>
       <div className="panel-body">
+        <div className="btn-row">
+          <button className="btn btn-primary" onClick={onSendAll} disabled={!hasProbes || bulk.running}>
+            {bulk.running ? `Sending all… (${bulk.done}/${bulk.total})` : 'Send all requests & evaluate'}
+          </button>
+          <button className="btn btn-ghost btn-block" onClick={onLoadAllCached} disabled={!hasProbes || bulk.running}
+                  title="Evaluate every probe against its cached sample response">
+            Load all cached responses
+          </button>
+        </div>
+
         <PerformanceSummary summary={summary} />
 
         {!probe && <p className="empty">Select a request in the middle panel, then send it to see the response and verdict here.</p>}
@@ -377,6 +387,7 @@ function App() {
 
   const [selected, setSelected] = useState(null);
   const [responses, setResponses] = useState({}); // id -> { state, response|error, verdict }
+  const [bulk, setBulk] = useState({ running: false, done: 0, total: 0 });
 
   useEffect(() => {
     loadTarget().then(setTarget).catch(() => setSpecError('Could not reach the backend.'));
@@ -432,17 +443,53 @@ function App() {
     }
   }
 
-  // Step 3 fallback: evaluate the cached sample response without a live call.
-  function loadCachedResponse(probe) {
+  function cachedEntry(probe) {
     const c = probe.cachedResponse;
-    if (!c) return;
+    if (!c) return null;
     const response = {
       status: c.status,
       statusText: c.statusText || '',
       body: typeof c.body === 'string' ? c.body : JSON.stringify(c.body),
       elapsedMs: 0,
     };
-    setResponses((r) => ({ ...r, [probe.id]: { state: 'done', response, verdict: evaluate(probe, response), cached: true } }));
+    return { state: 'done', response, verdict: evaluate(probe, response), cached: true };
+  }
+
+  // Step 3 fallback: evaluate the cached sample response without a live call.
+  function loadCachedResponse(probe) {
+    const entry = cachedEntry(probe);
+    if (entry) setResponses((r) => ({ ...r, [probe.id]: entry }));
+  }
+
+  // Bulk: send every probe live, with limited concurrency, updating as they land.
+  async function sendAll() {
+    const tests = probeResult?.tests || [];
+    if (!tests.length || bulk.running) return;
+    setBulk({ running: true, done: 0, total: tests.length });
+    const queue = [...tests];
+    let done = 0;
+    const worker = async () => {
+      while (queue.length) {
+        await execute(queue.shift());
+        done += 1;
+        setBulk((b) => ({ ...b, done }));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+    setBulk({ running: false, done: 0, total: 0 });
+  }
+
+  // Bulk: evaluate every probe's cached response without any live calls.
+  function loadAllCached() {
+    const tests = probeResult?.tests || [];
+    setResponses((r) => {
+      const next = { ...r };
+      for (const probe of tests) {
+        const entry = cachedEntry(probe);
+        if (entry) next[probe.id] = entry;
+      }
+      return next;
+    });
   }
 
   const summary = useMemo(() => {
@@ -495,8 +542,12 @@ function App() {
           probe={selected}
           entry={selected ? responses[selected.id] : null}
           summary={summary}
+          hasProbes={!!probeResult?.tests?.length}
+          bulk={bulk}
           onRun={execute}
           onLoadCached={loadCachedResponse}
+          onSendAll={sendAll}
+          onLoadAllCached={loadAllCached}
         />
       </main>
     </div>
