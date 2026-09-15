@@ -3,14 +3,52 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 const REQUEST_TIMEOUT = 20000;
+const GENERATE_TIMEOUT = 60000; // Gemini generation can take a while.
 
 // --- helpers ---------------------------------------------------------------
 
+// Fetch JSON with defensive parsing (a non-JSON body such as a plain
+// "Internal Server Error" 500 becomes a readable error, not a parse crash) and
+// at least one retry on server errors / network failures.
+async function requestJSON(url, { method = 'GET', body, timeout = REQUEST_TIMEOUT, retries = 0 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: body != null ? { 'Content-Type': 'application/json' } : undefined,
+        body: body != null ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeout),
+      });
+      const text = await res.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { detail: text.slice(0, 300) || `${res.status} ${res.statusText}` };
+      }
+      if (!res.ok) {
+        const err = new Error(data.detail || `Request failed (${res.status}).`);
+        err.status = res.status;
+        if (res.status >= 500 && attempt < retries) {
+          lastError = err;
+          continue; // transient server error → retry
+        }
+        throw err;
+      }
+      return data;
+    } catch (err) {
+      lastError = err.name === 'TimeoutError' ? new Error('Request timed out.') : err;
+      if (attempt < retries) continue; // network/timeout → retry
+      throw lastError;
+    }
+  }
+  throw lastError;
+}
+
 // Fetch the target lock config (spec URL + base URL) from our backend.
-async function loadTarget() {
-  const res = await fetch('/api/target');
-  if (!res.ok) throw new Error('Could not read target configuration.');
-  return res.json();
+function loadTarget() {
+  return requestJSON('/api/target');
 }
 
 // Load the Swagger spec. Try the live locked target first (this is the "upload"
@@ -18,25 +56,19 @@ async function loadTarget() {
 // tool still works if the browser cannot reach the live service.
 async function loadSpec(specUrl) {
   try {
-    const res = await fetch(specUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return { spec: await res.json(), source: 'live' };
+    return { spec: await requestJSON(specUrl), source: 'live' };
   } catch (err) {
-    const res = await fetch('/api/spec');
-    if (!res.ok) throw new Error('Could not load the API spec.');
-    return { spec: await res.json(), source: 'bundled', liveError: err.message };
+    return { spec: await requestJSON('/api/spec'), source: 'bundled', liveError: err.message };
   }
 }
 
-async function generateProbes(spec) {
-  const res = await fetch('/api/generate', {
+function generateProbes(spec) {
+  return requestJSON('/api/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ spec }),
+    body: { spec },
+    timeout: GENERATE_TIMEOUT,
+    retries: 1,
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || 'Generation failed.');
-  return data;
 }
 
 // Execute one probe live against the (locked) target API from the browser.
