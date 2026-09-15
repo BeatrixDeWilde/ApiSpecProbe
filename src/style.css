@@ -28,7 +28,7 @@ body {
 .app-head { padding: 20px 24px 8px; }
 .app-head h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
 .app-head h1::before { content: "◈ "; color: var(--accent); }
-.app-head p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+.app-head p { margin: 4px 0 0; color: var(--muted); max-width: 100ch; }
 
 /* three-panel grid */
 .grid {

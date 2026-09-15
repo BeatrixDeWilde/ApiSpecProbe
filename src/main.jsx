@@ -201,7 +201,7 @@ function ProbePanel({ specLoaded, result, status, error, onGenerate, onLoadCache
           </button>
         </div>
         <p className="hint">
-          Gemini reads the spec and proposes probes that inject attack payloads (SQLi, XSS,
+          Proposed probes generated from the API spec that inject attack payloads (SQLi, XSS,
           traversal, malformed / oversized bodies, auth abuse) into real endpoints. Generation
           can take a few seconds — or load a cached set. Click a probe to inspect it, then send it
           from the response panel.
@@ -467,7 +467,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-head">
-        <h1>ApiSpecProbe</h1>
+        <h1>API Spec Probe</h1>
         <p>Upload a Swagger spec, generate potentially malicious requests, and inspect whether the live API responds as it should.</p>
       </header>
       <main className="grid">
