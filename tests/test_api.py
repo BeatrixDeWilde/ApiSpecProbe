@@ -24,26 +24,6 @@ def client_with_env(**secrets):
 client = TestClient(app)
 
 
-# --- secret integration (existing behaviour) -------------------------------
-
-def test_secret_is_read_but_never_returned():
-    response = client_with_env(APP_SECRET="test-private-value").get("/api/message")
-    assert response.status_code == 200
-    assert response.json()["secret_loaded"] is True
-    assert "test-private-value" not in response.text
-    assert response.headers["cache-control"] == "no-store"
-
-
-def test_missing_secret():
-    response = client_with_env(APP_SECRET="").get("/api/message")
-    assert response.status_code == 503
-    assert response.headers["cache-control"] == "no-store"
-
-
-def test_unknown_api_route():
-    assert client_with_env(APP_SECRET="x").get("/api/unknown").status_code == 404
-
-
 # --- spec loading (the only API-specific piece) ----------------------------
 
 def test_target_reports_demo_spec_and_derived_base():

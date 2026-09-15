@@ -61,20 +61,3 @@ async def generate(payload: SpecPayload, request: Request):
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:  # never leak a raw non-JSON 500 to the client
         raise HTTPException(status_code=502, detail=f"Request generation failed: {exc}")
-
-
-@router.get("/api/message")
-async def message(request: Request, response: Response):
-    # Cloudflare supplies this binding on the server; never send its value to React.
-    secret = _secret(request, "APP_SECRET")
-    if not secret:
-        raise HTTPException(
-            status_code=503,
-            detail="APP_SECRET is not configured on the backend.",
-            headers={"Cache-Control": "no-store"},
-        )
-    response.headers["Cache-Control"] = "no-store"
-    return {
-        "message": "Hello from FastAPI! The secret was read successfully.",
-        "secret_loaded": True,
-    }
