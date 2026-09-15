@@ -52,6 +52,8 @@ async def generate(payload: SpecPayload, request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
     except gemini.GeminiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:  # never leak a raw non-JSON 500 to the client
+        raise HTTPException(status_code=502, detail=f"Request generation failed: {exc}")
 
 
 @router.get("/api/message")

@@ -10,6 +10,7 @@ Nothing here is specific to any particular API: it operates purely on the spec i
 is given.
 """
 
+import asyncio
 import json
 
 from openapi import base_url, build_url
@@ -52,7 +53,15 @@ RESPONSE_SCHEMA = {
 
 
 class GeminiError(RuntimeError):
-    """Raised when Gemini cannot be reached or returns an unusable response."""
+    """Raised when Gemini cannot be reached or returns an unusable response.
+
+    ``retryable`` marks transient failures (5xx, network errors, unparseable
+    output) that are worth trying again.
+    """
+
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _endpoint(model):
@@ -95,8 +104,20 @@ except Exception:  # pragma: no cover - depends on runtime
     _IN_WORKERS = False
 
 
+def _decode(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise GeminiError(
+            f"Gemini returned a non-JSON response: {text[:300]}", retryable=True
+        )
+
+
 async def _default_post(url, headers, payload):
-    """POST JSON and return the parsed JSON response."""
+    """POST JSON and return the parsed JSON response.
+
+    HTTP 5xx and transport/parse failures are raised as retryable errors.
+    """
     if _IN_WORKERS:  # pragma: no cover - runs only on Cloudflare
         import js
         from js import Object
@@ -106,19 +127,31 @@ async def _default_post(url, headers, payload):
             {"method": "POST", "headers": headers, "body": json.dumps(payload)},
             dict_converter=Object.fromEntries,
         )
-        response = await js.fetch(url, options)
-        text = await response.text()
-        if response.status >= 400:
-            raise GeminiError(f"Gemini API error {response.status}: {text[:300]}")
-        return json.loads(text)
+        try:
+            response = await js.fetch(url, options)
+            text = await response.text()
+            status = response.status
+        except Exception as exc:  # network / runtime failure
+            raise GeminiError(f"Could not reach Gemini: {exc}", retryable=True)
+        if status >= 400:
+            raise GeminiError(
+                f"Gemini API error {status}: {text[:300]}", retryable=status >= 500
+            )
+        return _decode(text)
 
     import httpx
 
-    async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.post(url, headers=headers, json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(url, headers=headers, json=payload)
+    except httpx.RequestError as exc:
+        raise GeminiError(f"Could not reach Gemini: {exc}", retryable=True)
     if response.status_code >= 400:
-        raise GeminiError(f"Gemini API error {response.status_code}: {response.text[:300]}")
-    return response.json()
+        raise GeminiError(
+            f"Gemini API error {response.status_code}: {response.text[:300]}",
+            retryable=response.status_code >= 500,
+        )
+    return _decode(response.text)
 
 
 # --- parsing + normalisation ----------------------------------------------
@@ -181,21 +214,24 @@ def _parse_items(data):
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise GeminiError(f"Could not parse Gemini output as JSON: {exc}")
+        raise GeminiError(f"Could not parse Gemini output as JSON: {exc}", retryable=True)
     if isinstance(parsed, dict):
         parsed = parsed.get("requests") or parsed.get("tests") or []
     if not isinstance(parsed, list):
-        raise GeminiError("Gemini output was not a JSON array of requests.")
+        raise GeminiError("Gemini output was not a JSON array of requests.", retryable=True)
     return parsed
 
 
 # --- public API ------------------------------------------------------------
 
-async def generate_requests(spec, api_key, *, post=None, model=GEMINI_MODEL):
+async def generate_requests(spec, api_key, *, post=None, model=GEMINI_MODEL,
+                            retries=1, backoff=0.6):
     """Ask Gemini for probe requests derived from ``spec``.
 
     ``post`` is an async ``(url, headers, payload) -> dict`` transport; the
     default talks to the real Gemini API. ``api_key`` authenticates the request.
+    Transient failures (5xx, network errors, unparseable output) are retried up
+    to ``retries`` times before giving up.
     """
     if not isinstance(spec, dict) or not spec.get("paths"):
         raise ValueError("The uploaded document does not look like an OpenAPI spec.")
@@ -212,7 +248,17 @@ async def generate_requests(spec, api_key, *, post=None, model=GEMINI_MODEL):
     }
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
 
-    data = await transport(_endpoint(model), headers, payload)
-    items = _parse_items(data)
+    attempt = 0
+    while True:
+        try:
+            data = await transport(_endpoint(model), headers, payload)
+            items = _parse_items(data)
+            break
+        except GeminiError as exc:
+            if not exc.retryable or attempt >= retries:
+                raise
+            attempt += 1
+            if backoff:
+                await asyncio.sleep(backoff * attempt)
     tests = [_normalize(base, i, item) for i, item in enumerate(items)]
     return {"target": base, "count": len(tests), "tests": tests}
