@@ -58,6 +58,17 @@ def test_bundled_spec_is_served():
     assert "/pet/{petId}" in spec["paths"]
 
 
+def test_cached_probes_have_sample_responses():
+    result = client.get("/api/cached").json()
+    assert result["cached"] is True
+    assert result["count"] == len(result["tests"]) > 0
+    for t in result["tests"]:
+        assert t["url"].startswith("https://petstore.swagger.io/v2")
+        cr = t["cachedResponse"]
+        assert isinstance(cr["status"], int)
+        assert "body" in cr
+
+
 # --- generic OpenAPI helpers -----------------------------------------------
 
 def test_base_url_supports_swagger2_and_openapi3():
@@ -116,6 +127,25 @@ def test_generate_requests_normalises_model_output():
     xss = result["tests"][1]
     assert xss["headers"] == {"api_key": "junk"}
     assert "status=%3Cscript%3E" in xss["url"]
+    # Every probe carries a cached sample response for the step-3 fallback.
+    assert sqli["cachedResponse"]["status"] == 400  # first expectedStatus (no sampleResponse)
+
+
+def test_sample_response_becomes_cached_response():
+    items = [{
+        "name": "n", "category": "c", "method": "get", "path": "/pet/{petId}",
+        "pathParams": [{"name": "petId", "value": "9"}], "expectedStatuses": [400, 404],
+        "sampleResponse": {"status": 200, "body": '{"id":9,"name":"accepted"}'},
+    }]
+
+    async def fake_post(url, headers, payload):
+        return _gemini_response(items)
+
+    result = asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=fake_post))
+    cr = result["tests"][0]["cachedResponse"]
+    assert cr["status"] == 200
+    assert cr["source"] == "gemini"
+    assert "accepted" in cr["body"]
 
 
 def test_generate_requests_defaults_missing_statuses():

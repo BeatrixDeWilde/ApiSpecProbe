@@ -71,6 +71,11 @@ function generateProbes(spec) {
   });
 }
 
+// Cached, pre-generated probes for the demo when live generation is unavailable.
+function loadCachedProbes() {
+  return requestJSON('/api/cached', { retries: 1 });
+}
+
 // Execute one probe live against the (locked) target API from the browser.
 async function runProbe(probe) {
   const started = performance.now();
@@ -169,7 +174,7 @@ function SpecPanel({ target, spec, source, liveError, status, error, onLoad }) {
   );
 }
 
-function ProbePanel({ specLoaded, result, status, error, onGenerate, selectedId, onSelect, responses }) {
+function ProbePanel({ specLoaded, result, status, error, onGenerate, onLoadCached, selectedId, onSelect, responses }) {
   const grouped = useMemo(() => {
     const map = new Map();
     for (const t of result?.tests || []) {
@@ -186,18 +191,27 @@ function ProbePanel({ specLoaded, result, status, error, onGenerate, selectedId,
         {result && <span className="badge">{result.count} probes</span>}
       </div>
       <div className="panel-body">
-        <button className="btn btn-primary" onClick={onGenerate} disabled={!specLoaded || status === 'loading'}>
-          {status === 'loading' ? 'Generating…' : 'Generate malicious requests'}
-        </button>
+        <div className="btn-row">
+          <button className="btn btn-primary" onClick={onGenerate} disabled={!specLoaded || status !== 'idle'}>
+            {status === 'generating' ? 'Generating…' : 'Generate malicious requests'}
+          </button>
+          <button className="btn btn-ghost btn-block" onClick={onLoadCached} disabled={status !== 'idle'}
+                  title="Use pre-generated probes if live generation fails">
+            {status === 'cached' ? 'Loading…' : 'Load cached probes'}
+          </button>
+        </div>
         <p className="hint">
           Gemini reads the spec and proposes probes that inject attack payloads (SQLi, XSS,
           traversal, malformed / oversized bodies, auth abuse) into real endpoints. Generation
-          can take a few seconds. Click a probe to send it and inspect the response.
+          can take a few seconds — or load a cached set. Click a probe to inspect it, then send it
+          from the response panel.
         </p>
 
         {error && <p className="alert" role="alert">{error}</p>}
 
         {!result && !error && <p className="empty">{specLoaded ? 'Ready to generate.' : 'Load a spec first.'}</p>}
+
+        {result?.cached && <p className="hint hint-warn">Showing cached probes (not generated live).</p>}
 
         {grouped.map(([opId, group]) => (
           <div className="op-group" key={opId}>
@@ -237,7 +251,39 @@ function ProbePanel({ specLoaded, result, status, error, onGenerate, selectedId,
   );
 }
 
-function ResponsePanel({ probe, entry, onRun }) {
+function PerformanceSummary({ summary }) {
+  const { total, evaluated, secure, flagged, errors } = summary;
+  const rate = evaluated ? Math.round((secure / evaluated) * 100) : 0;
+  return (
+    <div className="summary-card">
+      <div className="summary-head">
+        <span className="summary-title">API performance</span>
+        <span className="summary-progress">{evaluated} / {total} evaluated</span>
+      </div>
+      {evaluated === 0 ? (
+        <p className="hint" style={{ margin: 0 }}>
+          Send probes to see how the API holds up. Each is scored “expected” (rejected, secure) or
+          “unexpected” (accepted or crashed).
+        </p>
+      ) : (
+        <>
+          <div className="meter" role="img" aria-label={`${rate}% of evaluated probes handled securely`}>
+            <div className="meter-fill" style={{ width: `${rate}%` }} />
+          </div>
+          <div className="summary-stats">
+            <span className="stat stat-ok"><strong>{secure}</strong> secure</span>
+            <span className="stat stat-bad"><strong>{flagged}</strong> flagged</span>
+            {errors > 0 && <span className="stat stat-muted"><strong>{errors}</strong> errored</span>}
+            <span className="stat stat-rate">{rate}% secure</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ResponsePanel({ probe, entry, summary, onRun, onLoadCached }) {
+  const running = entry?.state === 'running';
   return (
     <section className="panel" aria-labelledby="resp-heading">
       <div className="panel-head">
@@ -247,7 +293,9 @@ function ResponsePanel({ probe, entry, onRun }) {
         )}
       </div>
       <div className="panel-body">
-        {!probe && <p className="empty">Select a request in the middle panel to send it and see the response here.</p>}
+        <PerformanceSummary summary={summary} />
+
+        {!probe && <p className="empty">Select a request in the middle panel, then send it to see the response and verdict here.</p>}
 
         {probe && (
           <>
@@ -269,18 +317,25 @@ function ResponsePanel({ probe, entry, onRun }) {
               {probe.body != null && (
                 <pre className="code-block" aria-label="Request body">{typeof probe.body === 'string' ? probe.body : JSON.stringify(probe.body, null, 2)}</pre>
               )}
-              <button className="btn btn-ghost" onClick={() => onRun(probe)} disabled={entry?.state === 'running'}>
-                {entry?.state === 'running' ? 'Sending…' : 'Re-send request'}
-              </button>
+              <div className="btn-row">
+                <button className="btn btn-primary" onClick={() => onRun(probe)} disabled={running}>
+                  {running ? 'Sending…' : entry ? 'Re-send & evaluate' : 'Send request and evaluate response'}
+                </button>
+                <button className="btn btn-ghost btn-block" onClick={() => onLoadCached(probe)}
+                        disabled={running || !probe.cachedResponse}
+                        title="Evaluate a cached sample response if the live request fails">
+                  Load cached response
+                </button>
+              </div>
             </div>
 
             <div className="resp-card" aria-live="polite">
-              {!entry && <p className="empty">Sending…</p>}
-              {entry?.state === 'running' && <p className="empty">Sending request…</p>}
+              {!entry && <p className="empty">Not sent yet — press “Send request and evaluate response”.</p>}
+              {running && <p className="empty">Sending request…</p>}
               {entry?.state === 'error' && (
                 <div>
                   <p className="alert" role="alert">Request could not be sent: {entry.error}</p>
-                  <p className="hint">This is often a CORS or network restriction rather than an API result.</p>
+                  <p className="hint">This is often a CORS or network restriction rather than an API result. Try “Load cached response” to evaluate a sample instead.</p>
                 </div>
               )}
               {entry?.state === 'done' && (
@@ -291,7 +346,9 @@ function ResponsePanel({ probe, entry, onRun }) {
                   </div>
                   <div className="resp-stats">
                     <span className="status-code">{entry.response.status} {entry.response.statusText}</span>
-                    <span className="latency">{entry.response.elapsedMs} ms</span>
+                    {entry.cached
+                      ? <span className="cached-tag">cached sample</span>
+                      : <span className="latency">{entry.response.elapsedMs} ms</span>}
                   </div>
                   <pre className="code-block resp-body">{prettyBody(entry.response.body) || '(empty response body)'}</pre>
                 </>
@@ -344,14 +401,14 @@ function App() {
     }
   }
 
-  async function handleGenerate() {
-    if (!spec) return;
-    setProbeStatus('loading');
+  async function runProbeSource(loader, statusLabel) {
+    if (probeStatus !== 'idle') return;
+    setProbeStatus(statusLabel);
     setProbeError('');
     setSelected(null);
     setResponses({});
     try {
-      setProbeResult(await generateProbes(spec));
+      setProbeResult(await loader());
     } catch (err) {
       setProbeError(err.message);
     } finally {
@@ -359,21 +416,52 @@ function App() {
     }
   }
 
+  const handleGenerate = () => spec && runProbeSource(() => generateProbes(spec), 'generating');
+  const handleLoadCachedProbes = () => runProbeSource(loadCachedProbes, 'cached');
+
+  // Step 3: send the selected probe live and evaluate the response.
   async function execute(probe) {
     setResponses((r) => ({ ...r, [probe.id]: { state: 'running' } }));
     try {
       const response = await runProbe(probe);
       const verdict = evaluate(probe, response);
-      setResponses((r) => ({ ...r, [probe.id]: { state: 'done', response, verdict } }));
+      setResponses((r) => ({ ...r, [probe.id]: { state: 'done', response, verdict, cached: false } }));
     } catch (err) {
       const msg = err.name === 'TimeoutError' ? 'Request timed out.' : err.message;
       setResponses((r) => ({ ...r, [probe.id]: { state: 'error', error: msg } }));
     }
   }
 
+  // Step 3 fallback: evaluate the cached sample response without a live call.
+  function loadCachedResponse(probe) {
+    const c = probe.cachedResponse;
+    if (!c) return;
+    const response = {
+      status: c.status,
+      statusText: c.statusText || '',
+      body: typeof c.body === 'string' ? c.body : JSON.stringify(c.body),
+      elapsedMs: 0,
+    };
+    setResponses((r) => ({ ...r, [probe.id]: { state: 'done', response, verdict: evaluate(probe, response), cached: true } }));
+  }
+
+  const summary = useMemo(() => {
+    const tests = probeResult?.tests || [];
+    let evaluated = 0, secure = 0, flagged = 0, errors = 0;
+    for (const t of tests) {
+      const e = responses[t.id];
+      if (!e) continue;
+      if (e.state === 'error') { errors += 1; continue; }
+      if (e.state === 'done') {
+        evaluated += 1;
+        if (e.verdict.tone === 'ok') secure += 1; else flagged += 1;
+      }
+    }
+    return { total: tests.length, evaluated, secure, flagged, errors };
+  }, [probeResult, responses]);
+
   function handleSelect(probe) {
-    setSelected(probe);
-    if (!responses[probe.id]) execute(probe); // auto-send on first click
+    setSelected(probe); // selecting no longer auto-sends; step 3 has an explicit button
   }
 
   return (
@@ -400,9 +488,16 @@ function App() {
           selectedId={selected?.id}
           onSelect={handleSelect}
           onGenerate={handleGenerate}
+          onLoadCached={handleLoadCachedProbes}
           responses={responses}
         />
-        <ResponsePanel probe={selected} entry={selected ? responses[selected.id] : null} onRun={execute} />
+        <ResponsePanel
+          probe={selected}
+          entry={selected ? responses[selected.id] : null}
+          summary={summary}
+          onRun={execute}
+          onLoadCached={loadCachedResponse}
+        />
       </main>
     </div>
   );

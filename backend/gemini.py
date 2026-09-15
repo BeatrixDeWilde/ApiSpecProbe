@@ -46,6 +46,14 @@ RESPONSE_SCHEMA = {
             "body": {"type": "STRING"},
             "expectedStatuses": {"type": "ARRAY", "items": {"type": "INTEGER"}},
             "expectedBehavior": {"type": "STRING"},
+            "sampleResponse": {
+                "type": "OBJECT",
+                "properties": {
+                    "status": {"type": "INTEGER"},
+                    "body": {"type": "STRING"},
+                },
+                "required": ["status"],
+            },
         },
         "required": ["name", "category", "method", "path", "expectedStatuses"],
     },
@@ -86,7 +94,9 @@ def build_prompt(spec):
         "the pathParams, query and headers to send as name/value pairs using RAW, UNENCODED "
         "values (the caller percent-encodes them); an optional request body as a string; the "
         "HTTP status codes a secure API SHOULD respond with (expectedStatuses, normally 4xx "
-        "client errors); and a short expectedBehavior.\n\n"
+        "client errors); a short expectedBehavior; and a sampleResponse (a plausible HTTP "
+        "status and short JSON body the real API might actually return to this probe) that is "
+        "used as a cached fallback when the live request cannot be sent.\n\n"
         "Produce between 15 and 30 requests, spread across as many different endpoints as "
         "possible. Only reference paths, parameters and headers that exist in the spec.\n\n"
         f"OpenAPI specification:\n{json.dumps(spec)}"
@@ -187,6 +197,11 @@ def _normalize(base, index, item):
     headers = {name: value for name, value in _pairs(item.get("headers"))}
     body = item.get("body") or None
     statuses = _statuses(item.get("expectedStatuses"))
+    sample = item.get("sampleResponse") or {}
+    try:
+        sample_status = int(sample.get("status"))
+    except (TypeError, ValueError):
+        sample_status = statuses[0]
     return {
         "id": f"probe-{index}",
         "name": item.get("name") or f"{method} {path}",
@@ -202,6 +217,13 @@ def _normalize(base, index, item):
         "expectedStatuses": statuses,
         "expectedBehavior": item.get("expectedBehavior")
         or f"Reject the probe with a client error ({', '.join(map(str, statuses))}).",
+        # Gemini's best guess of a real response, cached for the demo fallback.
+        "cachedResponse": {
+            "status": sample_status,
+            "statusText": "",
+            "body": sample.get("body") or "",
+            "source": "gemini",
+        },
     }
 
 
