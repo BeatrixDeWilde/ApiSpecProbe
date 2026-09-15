@@ -1,21 +1,16 @@
-from fastapi import FastAPI, HTTPException, Request, Response
+"""ApiSpecProbe backend application.
+
+Loads an OpenAPI/Swagger spec, uses Gemini to generate potentially malicious
+probe requests from it, and lets a client execute them against the live API to
+see whether the responses are the well-behaved rejections a secure service
+should return.
+
+This module only wires the app together; routes live in ``routes.py``.
+"""
+
+from fastapi import FastAPI
+
+from routes import router
 
 app = FastAPI(title="ApiSpecProbe")
-
-
-@app.get("/api/message")
-async def message(request: Request, response: Response):
-    # Cloudflare supplies this binding on the server; never send its value to React.
-    env = request.scope.get("env")
-    secret = getattr(env, "APP_SECRET", None) if env is not None else None
-    if not secret:
-        raise HTTPException(
-            status_code=503,
-            detail="APP_SECRET is not configured on the backend.",
-            headers={"Cache-Control": "no-store"},
-        )
-    response.headers["Cache-Control"] = "no-store"
-    return {
-        "message": "Hello from FastAPI! The secret was read successfully.",
-        "secret_loaded": True,
-    }
+app.include_router(router)

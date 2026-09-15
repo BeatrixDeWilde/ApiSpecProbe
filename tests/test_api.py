@@ -1,18 +1,33 @@
+import asyncio
+import json
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
-from backend.app import app
+
+import gemini
+from app import app
+from demo_spec import DEMO_SPEC, DEMO_SPEC_URL
+from openapi import base_url, build_url
 
 
-def client_with_secret(secret):
+def client_with_env(**secrets):
+    env = SimpleNamespace(**secrets)
+
     async def with_env(scope, receive, send):
-        scope["env"] = SimpleNamespace(APP_SECRET=secret)
+        scope["env"] = env
         await app(scope, receive, send)
+
     return TestClient(with_env)
 
 
+client = TestClient(app)
+
+
+# --- secret integration (existing behaviour) -------------------------------
+
 def test_secret_is_read_but_never_returned():
-    response = client_with_secret("test-private-value").get("/api/message")
+    response = client_with_env(APP_SECRET="test-private-value").get("/api/message")
     assert response.status_code == 200
     assert response.json()["secret_loaded"] is True
     assert "test-private-value" not in response.text
@@ -20,10 +35,141 @@ def test_secret_is_read_but_never_returned():
 
 
 def test_missing_secret():
-    response = client_with_secret("").get("/api/message")
+    response = client_with_env(APP_SECRET="").get("/api/message")
     assert response.status_code == 503
     assert response.headers["cache-control"] == "no-store"
 
 
 def test_unknown_api_route():
-    assert client_with_secret("test-value").get("/api/unknown").status_code == 404
+    assert client_with_env(APP_SECRET="x").get("/api/unknown").status_code == 404
+
+
+# --- spec loading (the only API-specific piece) ----------------------------
+
+def test_target_reports_demo_spec_and_derived_base():
+    body = client.get("/api/target").json()
+    assert body["specUrl"] == DEMO_SPEC_URL
+    assert body["baseUrl"] == "https://petstore.swagger.io/v2"
+
+
+def test_bundled_spec_is_served():
+    spec = client.get("/api/spec").json()
+    assert spec["swagger"] == "2.0"
+    assert "/pet/{petId}" in spec["paths"]
+
+
+# --- generic OpenAPI helpers -----------------------------------------------
+
+def test_base_url_supports_swagger2_and_openapi3():
+    assert base_url(DEMO_SPEC) == "https://petstore.swagger.io/v2"
+    assert base_url({"servers": [{"url": "https://api.example.com/v1/"}]}) == "https://api.example.com/v1"
+    assert base_url({}) == ""
+
+
+def test_build_url_encodes_path_and_query():
+    url = build_url("https://api.example.com/v1", "/pet/{petId}",
+                    [("petId", "1 OR 1=1")], [("q", "<script>")])
+    assert url == "https://api.example.com/v1/pet/1%20OR%201%3D1?q=%3Cscript%3E"
+
+
+# --- Gemini generation (transport injected; no network) --------------------
+
+def _gemini_response(items):
+    return {"candidates": [{"content": {"parts": [{"text": json.dumps(items)}]}}]}
+
+
+SAMPLE_ITEMS = [
+    {
+        "name": "SQLi in petId", "category": "SQL Injection", "rationale": "boolean clause",
+        "target": "path petId", "payload": "1 OR 1=1", "method": "get", "path": "/pet/{petId}",
+        "pathParams": [{"name": "petId", "value": "1 OR 1=1"}], "query": [], "headers": [],
+        "body": "", "expectedStatuses": [400, 404], "expectedBehavior": "reject",
+    },
+    {
+        "name": "XSS in status", "category": "Cross-Site Scripting", "rationale": "reflected",
+        "target": "query status", "payload": "<script>", "method": "get",
+        "path": "/pet/findByStatus", "pathParams": [],
+        "query": [{"name": "status", "value": "<script>alert(1)</script>"}],
+        "headers": [{"name": "api_key", "value": "junk"}], "body": "",
+        "expectedStatuses": [400], "expectedBehavior": "reject",
+    },
+]
+
+
+def test_generate_requests_normalises_model_output():
+    async def fake_post(url, headers, payload):
+        assert headers["x-goog-api-key"] == "secret-key"
+        assert "generateContent" in url
+        return _gemini_response(SAMPLE_ITEMS)
+
+    result = asyncio.run(gemini.generate_requests(DEMO_SPEC, "secret-key", post=fake_post))
+    assert result["target"] == "https://petstore.swagger.io/v2"
+    assert result["count"] == 2
+    ids = [t["id"] for t in result["tests"]]
+    assert ids == ["probe-0", "probe-1"]
+
+    sqli = result["tests"][0]
+    assert sqli["method"] == "GET"
+    assert sqli["url"] == "https://petstore.swagger.io/v2/pet/1%20OR%201%3D1"
+    assert sqli["expectedStatuses"] == [400, 404]
+
+    xss = result["tests"][1]
+    assert xss["headers"] == {"api_key": "junk"}
+    assert "status=%3Cscript%3E" in xss["url"]
+
+
+def test_generate_requests_defaults_missing_statuses():
+    items = [{"name": "n", "category": "c", "method": "post", "path": "/user",
+              "expectedStatuses": []}]
+
+    async def fake_post(url, headers, payload):
+        return _gemini_response(items)
+
+    result = asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=fake_post))
+    assert result["tests"][0]["expectedStatuses"] == gemini.DEFAULT_EXPECTED_STATUSES
+
+
+def test_generate_requests_rejects_non_spec():
+    async def fake_post(url, headers, payload):  # should never be called
+        raise AssertionError("model should not be called for an invalid spec")
+
+    with pytest.raises(ValueError):
+        asyncio.run(gemini.generate_requests({"not": "a spec"}, "k", post=fake_post))
+
+
+def test_generate_requests_raises_on_bad_gemini_output():
+    async def fake_post(url, headers, payload):
+        return {"promptFeedback": {"blockReason": "SAFETY"}}
+
+    with pytest.raises(gemini.GeminiError):
+        asyncio.run(gemini.generate_requests(DEMO_SPEC, "k", post=fake_post))
+
+
+def test_generate_is_not_locked_to_any_host(monkeypatch):
+    async def fake_post(url, headers, payload):
+        return _gemini_response(SAMPLE_ITEMS)
+
+    monkeypatch.setattr(gemini, "_default_post", fake_post)
+    other_spec = {"host": "api.other.com", "basePath": "/v1", "schemes": ["https"],
+                  "paths": {"/pet/{petId}": {"get": {"operationId": "x"}}}}
+    resp = client_with_env(GEMINI_API_KEY="k").post("/api/generate", json={"spec": other_spec})
+    assert resp.status_code == 200
+    assert resp.json()["target"] == "https://api.other.com/v1"
+
+
+# --- /api/generate route ---------------------------------------------------
+
+def test_generate_requires_api_key():
+    resp = client_with_env().post("/api/generate", json={"spec": DEMO_SPEC})
+    assert resp.status_code == 503
+    assert "GEMINI_API_KEY" in resp.json()["detail"]
+
+
+def test_generate_route_returns_probes(monkeypatch):
+    async def fake_post(url, headers, payload):
+        return _gemini_response(SAMPLE_ITEMS)
+
+    monkeypatch.setattr(gemini, "_default_post", fake_post)
+    resp = client_with_env(GEMINI_API_KEY="k").post("/api/generate", json={"spec": DEMO_SPEC})
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 2
